@@ -1,0 +1,71 @@
+name: Flight bots
+
+# Times are UTC. Together each pair of lines means "every 90 minutes".
+on:
+  schedule:
+    - cron: "0 0-21/3 * * *"     # main bot
+    - cron: "30 1-22/3 * * *"    # main bot
+    - cron: "45 0-21/3 * * *"    # short-trip bot (45 min after the main bot)
+    - cron: "15 2-23/3 * * *"    # short-trip bot
+  workflow_dispatch:             # adds a "Run workflow" button for testing
+    inputs:
+      bot:
+        description: "Which bot to run"
+        type: choice
+        options: [both, main, short]
+        default: both
+
+permissions:
+  contents: write                # lets the bots save which deals they've emailed
+
+concurrency:
+  group: flight-bots             # never run two checks at the same time
+  cancel-in-progress: false
+
+jobs:
+  check-fares:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: America/Vancouver
+      IGNAV_API_KEY: ${{ secrets.IGNAV_API_KEY }}
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      SCHEDULE: ${{ github.event.schedule }}
+      CHOICE: ${{ inputs.bot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Search for fares
+        run: |
+          case "$SCHEDULE" in
+            "0 0-21/3 * * *"|"30 1-22/3 * * *")  BOTS="flight_bot.py" ;;
+            "45 0-21/3 * * *"|"15 2-23/3 * * *") BOTS="flight_bot_short.py" ;;
+            *) case "$CHOICE" in
+                 main)  BOTS="flight_bot.py" ;;
+                 short) BOTS="flight_bot_short.py" ;;
+                 *)     BOTS="flight_bot.py flight_bot_short.py" ;;
+               esac ;;
+          esac
+          for bot in $BOTS; do
+            echo "::group::$bot"
+            python -u "$bot" --once
+            echo "::endgroup::"
+          done
+
+      - name: Save the bots' memory
+        if: always()
+        run: |
+          git config user.name "flight-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f -- *_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Nothing new to save."
+          else
+            git commit -m "Update flight bot memory"
+            git pull --rebase --quiet && git push --quiet
+          fi
