@@ -1,0 +1,51 @@
+name: Flight bot - main
+
+# Times are UTC. Together these two lines mean "every 90 minutes".
+on:
+  schedule:
+    - cron: "0 0-21/3 * * *"
+    - cron: "30 1-22/3 * * *"
+  workflow_dispatch:             # adds a "Run workflow" button for testing
+
+permissions:
+  contents: write                # lets the bot save which deals it has emailed
+
+concurrency:
+  group: flight-bot-main                 # this bot never runs twice at once (the other bot is separate)
+  cancel-in-progress: false
+
+jobs:
+  check-fares:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TZ: America/Vancouver
+      IGNAV_API_KEY: ${{ secrets.IGNAV_API_KEY }}
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Search for fares
+        run: python -u flight_bot.py --once
+
+      - name: Save the bot's memory
+        if: always()
+        run: |
+          git config user.name "flight-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f -- flight_bot_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Nothing new to save."
+            exit 0
+          fi
+          git commit -m "Update flight_bot_state.json"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --quiet && git push --quiet && exit 0
+            sleep $((i * 5))
+          done
+          echo "Could not save memory this time; it will be saved next run."
